@@ -85,6 +85,7 @@ class Transcode
   AVFrame         *audio_de_frame;
   AVFrame         *video_en_frame;
   AVFrame         *audio_en_frame;
+  AVPacket        *w_pkt;
 
   // 用于转码用的参数结构体
   typedef struct TranscodePar{

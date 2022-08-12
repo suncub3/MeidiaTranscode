@@ -8,7 +8,7 @@ Transcode::Transcode():inFmtCtx(nullptr),outFmtCtx(nullptr),
                        video_in_stream_index_(-1),video_ou_stream_index_(-1),audio_in_stream_index_(-1),audio_ou_stream_index_(-1),video_pts(0),audio_pts(0),
                        src_video_id(AV_CODEC_ID_NONE),src_audio_id(AV_CODEC_ID_NONE),
                        video_de_ctx(nullptr),audio_de_ctx(nullptr),video_en_ctx(nullptr),audio_en_ctx(nullptr),swr_ctx(nullptr),sws_ctx(nullptr),
-                       video_de_frame(nullptr),audio_de_frame(nullptr),video_en_frame(nullptr),audio_en_frame(nullptr),
+                       video_de_frame(nullptr),audio_de_frame(nullptr),video_en_frame(nullptr),audio_en_frame(nullptr),w_pkt(nullptr),
                        last_video_pts(0),last_audio_pts(0),audio_need_convert(false),video_need_convert(false),audio_init(false)
 {
 
@@ -680,18 +680,21 @@ void Transcode::doEncodeVideo(AVFrame *frame)
     return;
   }
 
+  if (!w_pkt) {
+    w_pkt = av_packet_alloc();
+  }
   while (true) {
-    AVPacket *pkt = av_packet_alloc();
-    if((ret = avcodec_receive_packet(video_en_ctx, pkt)) < 0) {
+    if((ret = avcodec_receive_packet(video_en_ctx, w_pkt)) < 0) {
       break;
     }
 
     AVStream *stream = outFmtCtx->streams[video_ou_stream_index_];
-    av_packet_rescale_ts(pkt, video_en_ctx->time_base, stream->time_base);
-    pkt->stream_index = video_ou_stream_index_;
+    av_packet_rescale_ts(w_pkt, video_en_ctx->time_base, stream->time_base);
+    w_pkt->stream_index = video_ou_stream_index_;
 
 //    DLOG(INFO) << "out pkt pts: " << pkt->pts;
-    doWrite(pkt);
+    doWrite(w_pkt);
+    av_packet_unref(w_pkt);
   }
 }
 
@@ -839,18 +842,20 @@ void Transcode::doEncodeAudio(AVFrame *frame)
     return;
   }
 
-
+  if (!w_pkt) {
+    w_pkt = av_packet_alloc();
+  }
   while (true) {
-    AVPacket *pkt = av_packet_alloc();
-    if ((ret = avcodec_receive_packet(audio_en_ctx, pkt)) < 0) {
+    if ((ret = avcodec_receive_packet(audio_en_ctx, w_pkt)) < 0) {
       break;
     }
 
     AVStream *stream = outFmtCtx->streams[audio_ou_stream_index_];
-    av_packet_rescale_ts(pkt, audio_en_ctx->time_base, stream->time_base);
-    pkt->stream_index = audio_ou_stream_index_;
+    av_packet_rescale_ts(w_pkt, audio_en_ctx->time_base, stream->time_base);
+    w_pkt->stream_index = audio_ou_stream_index_;
 
-    doWrite(pkt);
+    doWrite(w_pkt);
+    av_packet_unref(w_pkt);
   }
 }
 
@@ -937,8 +942,6 @@ bool Transcode::doWrite(AVPacket *packet)
     LOG(ERROR) <<"Error muxing packet";
     return false;
   }
-
-  av_packet_free(&packet);
   return true;
 }
 
@@ -1049,5 +1052,10 @@ void Transcode::releaseSources()
     // 在processFrame里面已经释放过了
 //    av_frame_free(&audio_en_frame);
     audio_en_frame = nullptr;
+  }
+
+  if (w_pkt) {
+    av_packet_free(&w_pkt);
+    w_pkt = nullptr;
   }
 }
