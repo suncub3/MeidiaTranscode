@@ -513,7 +513,7 @@ bool Transcode::initVideoEncoder()
     LOG(ERROR) << "video avcodec_parameters_from_context fail";
     return false;
   }
-  stream->time_base = (AVRational){1,video_en_ctx->framerate.num};
+  stream->time_base = (AVRational){video_en_ctx->framerate.den,video_en_ctx->framerate.num};
 
   if (video_need_convert) {
     // 分配像素转换上下文
