@@ -32,6 +32,12 @@ class Transcode
   // 做转码(包括编码方式，码率，分辨率，采样率，采样格式等等的转换)
   void doTranscode(std::string sPath, std::string dPath);
  private:
+  enum frameType {
+    isVideo,
+    isAudio,
+    other
+  };
+
   bool openFile(std::string src, std::string dst);
   bool checkCodec();
   bool initVideoDecoder();
@@ -42,9 +48,10 @@ class Transcode
   void doEncodeVideo(AVFrame *frame);
   void doDecodeAudio(AVPacket *packet);
   void doEncodeAudio(AVFrame *frame);
-  void eraseVpkt();
-  void eraseApkt();
-  bool doWrite(AVPacket* packet,bool isVideo);
+  void processFrame(AVFrame *frame, frameType type);
+  void eraseVFrame();
+  void eraseAFrame();
+  bool doWrite(AVPacket* packet);
   void releaseSources();
 
   int video_in_stream_index_;
@@ -112,8 +119,8 @@ class Transcode
   bool            video_need_transcode;
   bool            audio_need_transcode;
 
-  std::vector<AVPacket *> videoCache;
-  std::vector<AVPacket *> audioCache;
+  std::vector<AVFrame *> videoCache;
+  std::vector<AVFrame *> audioCache;
   int64_t last_video_pts;
   int64_t last_audio_pts;
 

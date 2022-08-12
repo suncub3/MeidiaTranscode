@@ -51,7 +51,7 @@ void Transcode::doTransmux(std::string srcPath,std::string dstPath)
     AVStream *out_stream = avformat_new_stream(ou_fmtCtx,nullptr);
 
     if (!out_stream) {
-      DLOG(ERROR) <<"Failed allocating output stream";
+      LOG(ERROR) <<"Failed allocating output stream";
       return;
     }
 
@@ -65,7 +65,7 @@ void Transcode::doTransmux(std::string srcPath,std::string dstPath)
       audio_ou_index = out_stream->index;
     }
     if ((ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar)) <0) {
-      DLOG(ERROR) <<"avcodec_parameters_copy fail " << av_err2str(ret);
+      LOG(ERROR) <<"avcodec_parameters_copy fail " << av_err2str(ret);
       return;
     }
 
@@ -104,7 +104,7 @@ void Transcode::doTransmux(std::string srcPath,std::string dstPath)
     pkt->stream_index = ou_stream->index;
 
     if (av_interleaved_write_frame(ou_fmtCtx, pkt) < 0) {
-      DLOG(ERROR) <<"Error muxing packet";
+      LOG(ERROR) <<"Error muxing packet";
       return;
     }
     av_packet_unref(pkt);
@@ -213,7 +213,7 @@ void Transcode::doTranscode(std::string sPath,std::string dPath)
   }
 
   while (!videoCache.empty() || !audioCache.empty()) {
-    doWrite(nullptr, true);
+    processFrame(nullptr, isVideo);
   }
 
   // 写入尾部信息
@@ -231,7 +231,7 @@ bool Transcode::openFile(std::string srcPath, std::string dstPath)
   int ret = 0;
   // 打开输入文件
   if (avformat_open_input(&inFmtCtx, srcPath.c_str(), nullptr, nullptr) < 0) {
-    DLOG(ERROR) <<"avformat_open_input failed:" << srcPath;
+    LOG(ERROR) <<"avformat_open_input failed:" << srcPath;
     return false;
   }
   if ((ret = avformat_find_stream_info(inFmtCtx, nullptr)) < 0) {
@@ -561,8 +561,7 @@ bool Transcode::initAudioEncoder()
   enum AVSampleFormat want_sample_fmt = dst_sample_fmt.copy?(enum AVSampleFormat)incodecpar->format:dst_sample_fmt.par_val.smp_fmt;
   enum AVSampleFormat result_sample_fmt = select_sample_format(codec, want_sample_fmt);
   if (result_sample_fmt == AV_SAMPLE_FMT_NONE) {
-    //LOGD("cannot surpot sample_fmt");
-    releaseSources();
+    LOG(ERROR) << "cannot surpot sample_fmt";
     return false;
   }
   audio_en_ctx->sample_fmt  = result_sample_fmt;
@@ -641,18 +640,16 @@ void Transcode::doDecodeVideo(AVPacket *inpacket)
     if((ret = avcodec_receive_frame(video_de_ctx, video_de_frame)) < 0) {
       if (ret == AVERROR_EOF) {
         LOG(INFO) << "audio decode finish";
-        doEncodeVideo(nullptr);
+        processFrame(nullptr, isVideo);
       }
       break;
     }
 
     // 如果需要格式转换 则在这里进行格式转换
+    video_en_frame = get_video_frame(video_en_ctx->pix_fmt, video_en_ctx->width, video_en_ctx->height);
     if (video_en_frame == nullptr) {
-      video_en_frame = get_video_frame(video_en_ctx->pix_fmt, video_en_ctx->width, video_en_ctx->height);
-      if (video_en_frame == nullptr) {
-        LOG(ERROR) << "can't get video frame";
-        return;
-      }
+      LOG(ERROR) << "can't get video frame";
+      return;
     }
 
     if (video_need_convert) {
@@ -666,11 +663,11 @@ void Transcode::doDecodeVideo(AVPacket *inpacket)
       // 直接拷贝即可
       av_frame_copy(video_en_frame, video_de_frame);
     }
-//    LOG(INFO) << "video_de_frame pts: " << video_de_frame->pts;
+//    DLOG(INFO) << "video_de_frame pts: " << video_de_frame->pts;
     // 这里pts的timebase 采用video_en_ctx->time_base 即为{1, fps}
     video_en_frame->pts = video_pts;
     video_pts++;
-    doEncodeVideo(video_en_frame);
+    processFrame(video_en_frame, isVideo);
   }
 }
 
@@ -693,8 +690,8 @@ void Transcode::doEncodeVideo(AVFrame *frame)
     av_packet_rescale_ts(pkt, video_en_ctx->time_base, stream->time_base);
     pkt->stream_index = video_ou_stream_index_;
 
-//    LOG(INFO) << "out pkt pts: " << pkt->pts;
-    doWrite(pkt, true);
+//    DLOG(INFO) << "out pkt pts: " << pkt->pts;
+    doWrite(pkt);
   }
 }
 
@@ -722,18 +719,16 @@ void Transcode::doDecodeAudio(AVPacket *packet)
     if ((ret = avcodec_receive_frame(audio_de_ctx, audio_de_frame)) < 0) {
       if (ret == AVERROR_EOF) {
         LOG(INFO) << "audio decode finish";
-        doEncodeAudio(nullptr);
+        processFrame(nullptr, isAudio);
       }
       break;
     }
 
     // 创建编码器用的AVFrame
+    audio_en_frame = get_audio_frame(audio_en_ctx->sample_fmt, audio_en_ctx->channel_layout, audio_en_ctx->sample_rate, audio_en_ctx->frame_size);
     if (audio_en_frame == nullptr) {
-      audio_en_frame = get_audio_frame(audio_en_ctx->sample_fmt, audio_en_ctx->channel_layout, audio_en_ctx->sample_rate, audio_en_ctx->frame_size);
-      if (audio_en_frame == nullptr) {
-        LOG(ERROR) << "can not create audio frame";
-        return;
-      }
+      LOG(ERROR) << "can not create audio frame";
+      return;
     }
 
     // 解码成功，然后再重新进行编码;
@@ -777,7 +772,7 @@ void Transcode::doDecodeAudio(AVPacket *packet)
             // 编码
             audio_en_frame->pts = av_rescale_q(audio_pts, (AVRational){1,audio_en_frame->sample_rate}, audio_en_ctx->time_base);
             audio_pts += audio_en_frame->nb_samples;
-            doEncodeAudio(audio_en_frame);
+            processFrame(audio_en_frame, isAudio);
 
             if (left_size > 0) {
               int size = av_get_bytes_per_sample((enum AVSampleFormat)audio_en_frame->format);
@@ -812,7 +807,7 @@ void Transcode::doDecodeAudio(AVPacket *packet)
             // 编码
             audio_en_frame->pts = av_rescale_q(audio_pts, (AVRational){1,audio_en_frame->sample_rate}, audio_en_ctx->time_base);
             audio_pts += audio_en_frame->nb_samples;
-            doEncodeAudio(audio_en_frame);
+            processFrame(audio_en_frame, isAudio);
           } else {
             break;
           }
@@ -831,7 +826,7 @@ void Transcode::doDecodeAudio(AVPacket *packet)
       audio_en_frame->pts = audio_pts;
       audio_en_frame->pts = av_rescale_q(audio_pts, (AVRational){1,audio_en_frame->sample_rate}, audio_en_ctx->time_base);
       audio_pts += frame_size;
-      doEncodeAudio(audio_en_frame);
+      processFrame(audio_en_frame, isAudio);
     }
   }
 }
@@ -855,94 +850,108 @@ void Transcode::doEncodeAudio(AVFrame *frame)
     av_packet_rescale_ts(pkt, audio_en_ctx->time_base, stream->time_base);
     pkt->stream_index = audio_ou_stream_index_;
 
-    doWrite(pkt, false);
+    doWrite(pkt);
   }
 }
 
-bool Transcode::doWrite(AVPacket *packet,bool isVideo)
-{
-  if (packet == nullptr) {
+void Transcode::processFrame(AVFrame *frame, frameType type) {
+  if (frame == nullptr) {
     LOG(INFO) << "flush";
   }
 
-  AVPacket *a_pkt = nullptr;
-  AVPacket *v_pkt = nullptr;
-  AVPacket *w_pkt = nullptr;
+  AVFrame *audio_f = nullptr;
+  AVFrame *video_f = nullptr;
 
-  if (packet) {
-    if (isVideo) {
-      v_pkt = packet;
+  if (frame) {
+    if (type == isAudio){
+      audio_f = frame;
+    } else if (type == isVideo) {
+      video_f = frame;
     } else {
-      a_pkt = packet;
+      LOG(INFO) << "frame is not video or audio";
     }
 
-    // 为了精确的比较时间，先缓存一点点数据
-    if (last_video_pts == 0 && isVideo && videoCache.size() == 0) {
-      videoCache.push_back(packet);
-      last_video_pts = packet->pts;
-      return true;
+    if (last_video_pts == 0 && type == isVideo && videoCache.size() == 0) {
+      videoCache.push_back(frame);
+      last_video_pts = frame->pts;
+      return;
     }
 
-    if (last_audio_pts == 0 && !isVideo && audioCache.size() == 0) {
-      audioCache.push_back(packet);
-      last_audio_pts = packet->pts;
-      return true;
+    if (last_audio_pts == 0 && type == isAudio && audioCache.size() == 0) {
+      audioCache.push_back(frame);
+      last_audio_pts = frame->pts;
+      return;
     }
   }
 
   if (videoCache.size() > 0) {    // 里面有缓存了数据
-    v_pkt = videoCache.front();
-    last_video_pts = v_pkt->pts;
-    if (isVideo && packet) {
-      videoCache.push_back(packet);
+    video_f = videoCache.front();
+    last_video_pts = video_f->pts;
+    if (type == isVideo && frame) {
+      videoCache.push_back(frame);
     }
   }
 
   if (audioCache.size() > 0) {    // 里面有缓存了数据
-    a_pkt = audioCache.front();
-    last_audio_pts = a_pkt->pts;
-    if (!isVideo && packet) {
-      audioCache.push_back(packet);
+    audio_f = audioCache.front();
+    last_audio_pts = audio_f->pts;
+    if (type == isAudio && frame) {
+      audioCache.push_back(frame);
     }
   }
 
   AVStream *a_stream = outFmtCtx->streams[audio_ou_stream_index_];
   AVStream *v_stream = outFmtCtx->streams[video_ou_stream_index_];
-  if (a_pkt && v_pkt) {   // 两个都有 则进行时间的比较
+  if (audio_f && video_f) {   // 两个都有 则进行时间的比较
     if (av_compare_ts(last_audio_pts,a_stream->time_base,last_video_pts,v_stream->time_base) <= 0) { // 视频在后
-      w_pkt = a_pkt;
-      eraseApkt();
+      eraseAFrame();
+      doEncodeAudio(audio_f);
+      av_frame_free(&audio_f);
+      audio_f = nullptr;
     } else {
-      w_pkt = v_pkt;
-      eraseVpkt();
+      eraseVFrame();
+      doEncodeVideo(video_f);
+      av_frame_free(&video_f);
+      video_f = nullptr;
     }
-  } else if (a_pkt) {
-    w_pkt = a_pkt;
-    eraseApkt();
-  } else if (v_pkt) {
-    w_pkt = v_pkt;
-    eraseVpkt();
+  } else if (audio_f) {
+    eraseAFrame();
+    doEncodeAudio(audio_f);
+    av_frame_free(&audio_f);
+    audio_f = nullptr;
+  } else if (video_f) {
+    eraseVFrame();
+    doEncodeVideo(video_f);
+    av_frame_free(&video_f);
+    video_f = nullptr;
+  }
+}
+
+bool Transcode::doWrite(AVPacket *packet)
+{
+  if (packet == nullptr) {
+    LOG(INFO) << "packet is nullptr";
   }
 
- if (av_interleaved_write_frame(outFmtCtx, w_pkt) < 0) {
+ if (av_interleaved_write_frame(outFmtCtx, packet) < 0) {
     LOG(ERROR) <<"Error muxing packet";
     return false;
   }
 
-  av_packet_free(&w_pkt);
+  av_packet_free(&packet);
   return true;
 }
 
-void Transcode::eraseVpkt() {
+void Transcode::eraseVFrame() {
   if (videoCache.size() > 0) {
-    std::vector<AVPacket*>::iterator begin = videoCache.begin();
+    std::vector<AVFrame*>::iterator begin = videoCache.begin();
     videoCache.erase(begin);
   }
 }
 
-void Transcode::eraseApkt() {
+void Transcode::eraseAFrame() {
   if (audioCache.size() > 0) {
-    std::vector<AVPacket*>::iterator begin = audioCache.begin();
+    std::vector<AVFrame*>::iterator begin = audioCache.begin();
     audioCache.erase(begin);
   }
 }
@@ -1031,12 +1040,14 @@ void Transcode::releaseSources()
   }
 
   if (video_en_frame) {
-    av_frame_free(&video_en_frame);
+    // 在processFrame里面已经释放过了
+//    av_frame_free(&video_en_frame);
     video_en_frame = nullptr;
   }
 
   if (audio_en_frame) {
-    av_frame_free(&audio_en_frame);
+    // 在processFrame里面已经释放过了
+//    av_frame_free(&audio_en_frame);
     audio_en_frame = nullptr;
   }
 }
