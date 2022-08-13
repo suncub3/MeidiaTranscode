@@ -192,13 +192,30 @@ void Transcode::doTranscode(std::string sPath,std::string dPath)
   AVPacket *inPacket = av_packet_alloc();
   while (av_read_frame(inFmtCtx, inPacket) == 0) {
     // 说明读取的视频数据
-    if (inPacket->stream_index == video_in_stream_index_ && video_need_transcode) {
-      doDecodeVideo(inPacket);
+    if (inPacket->stream_index == video_in_stream_index_) {
+      if (video_need_transcode) {
+        doDecodeVideo(inPacket);
+      } else {
+        av_packet_rescale_ts(inPacket, inFmtCtx->streams[video_in_stream_index_]->time_base, outFmtCtx->streams[video_ou_stream_index_]->time_base);
+        inPacket->pos = -1;
+        if (av_interleaved_write_frame(outFmtCtx, inPacket) < 0) {
+          DLOG(ERROR) <<"Error muxing packet";
+          return;
+        }
+      }
     }
-
     // 说明读取的音频数据
-    if (inPacket->stream_index == audio_in_stream_index_ && audio_need_transcode) {
-      doDecodeAudio(inPacket);
+    if (inPacket->stream_index == audio_in_stream_index_) {
+      if (audio_need_transcode) {
+        doDecodeAudio(inPacket);
+      } else {
+        av_packet_rescale_ts(inPacket, inFmtCtx->streams[audio_in_stream_index_]->time_base, outFmtCtx->streams[audio_ou_stream_index_]->time_base);
+        inPacket->pos = -1;
+        if (av_interleaved_write_frame(outFmtCtx, inPacket) < 0) {
+          DLOG(ERROR) <<"Error muxing packet";
+          return;
+        }
+      }
     }
     av_packet_unref(inPacket);
   }
@@ -961,44 +978,44 @@ void Transcode::eraseAFrame() {
 
 AVFrame* Transcode::get_audio_frame(enum AVSampleFormat smpfmt,int64_t ch_layout,int sample_rate,int nb_samples)
 {
-  AVFrame * audio_en_frame = av_frame_alloc();
+  AVFrame * f = av_frame_alloc();
   // 根据采样格式，采样率，声道类型以及采样数分配一个AVFrame
-  audio_en_frame->sample_rate = sample_rate;
-  audio_en_frame->format = smpfmt;
-  audio_en_frame->channel_layout = ch_layout;
-  audio_en_frame->nb_samples = nb_samples;
+  f->sample_rate = sample_rate;
+  f->format = smpfmt;
+  f->channel_layout = ch_layout;
+  f->nb_samples = nb_samples;
   int ret = 0;
-  if ((ret = av_frame_get_buffer(audio_en_frame, 0)) < 0) {
+  if ((ret = av_frame_get_buffer(f, 0)) < 0) {
     LOG(ERROR) << "audio get frame buffer fail: " << ret;
     return nullptr;
   }
 
-  if ((ret =  av_frame_make_writable(audio_en_frame)) < 0) {
+  if ((ret =  av_frame_make_writable(f)) < 0) {
     LOG(ERROR) << "audio av_frame_make_writable fail: " << ret;
     return nullptr;
   }
 
-  return audio_en_frame;
+  return f;
 }
 
 AVFrame* Transcode::get_video_frame(enum AVPixelFormat pixfmt,int width,int height)
 {
-  AVFrame *video_en_frame = av_frame_alloc();
-  video_en_frame->format = pixfmt;
-  video_en_frame->width = width;
-  video_en_frame->height = height;
+  AVFrame *f = av_frame_alloc();
+  f->format = pixfmt;
+  f->width = width;
+  f->height = height;
   int ret = 0;
-  if ((ret = av_frame_get_buffer(video_en_frame, 0)) < 0) {
+  if ((ret = av_frame_get_buffer(f, 0)) < 0) {
     LOG(ERROR) << "video get frame buffer fail: " << ret;
     return nullptr;
   }
 
-  if ((ret =  av_frame_make_writable(video_en_frame)) < 0) {
+  if ((ret =  av_frame_make_writable(f)) < 0) {
     LOG(ERROR) << "video av_frame_make_writable fail: " << ret;
     return nullptr;
   }
 
-  return video_en_frame;
+  return f;
 }
 
 void Transcode::releaseSources()
